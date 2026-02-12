@@ -16,6 +16,7 @@ from ccb_protocol import REQ_ID_PREFIX, is_done_text, strip_done_text, wrap_code
 from caskd_session import CodexProjectSession, compute_session_key, load_project_session
 from codex_comm import CodexLogReader
 from completion_hook import notify_completion
+from project_id import compute_ccb_project_id
 from providers import CASKD_SPEC
 from terminal import get_backend_for_session, is_windows
 
@@ -55,10 +56,24 @@ class CodexAdapter(BaseProviderAdapter):
         return ".codex-session"
 
     def load_session(self, work_dir: Path) -> Optional[CodexProjectSession]:
-        return load_project_session(work_dir)
+        try:
+            return load_project_session(work_dir)
+        except ValueError:
+            return None
 
     def compute_session_key(self, session: Any) -> str:
         return compute_session_key(session) if session else "codex:unknown"
+
+    def compute_session_key_for_request(self, request: ProviderRequest) -> Optional[str]:
+        pid = ""
+        try:
+            pid = compute_ccb_project_id(Path(request.work_dir))
+        except Exception:
+            pid = ""
+        inst = str(request.instance or "").strip()
+        if inst.isdigit():
+            return f"codex:{pid}:{inst}" if pid else f"codex:unknown:{inst}"
+        return f"codex:{pid}" if pid else None
 
     def handle_task(self, task: QueuedTask) -> ProviderResult:
         started_ms = _now_ms()
@@ -66,7 +81,16 @@ class CodexAdapter(BaseProviderAdapter):
         work_dir = Path(req.work_dir)
         _write_log(f"[INFO] start provider=codex req_id={task.req_id} work_dir={req.work_dir} caller={req.caller}")
 
-        session = load_project_session(work_dir)
+        try:
+            session = load_project_session(work_dir, instance=req.instance or None)
+        except ValueError as exc:
+            return ProviderResult(
+                exit_code=1,
+                reply=str(exc),
+                req_id=task.req_id,
+                session_key="codex:unknown",
+                done_seen=False,
+            )
         session_key = self.compute_session_key(session)
 
         if not session:
@@ -231,6 +255,7 @@ class CodexAdapter(BaseProviderAdapter):
             req_id=task.req_id,
             done_seen=done_seen,
             caller=req.caller,
+            caller_instance=req.caller_instance,
             email_req_id=req.email_req_id,
             email_msg_id=req.email_msg_id,
             email_from=req.email_from,

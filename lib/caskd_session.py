@@ -32,10 +32,69 @@ def _now_str() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _normalize_instance_id(raw: object) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    if not value.isdigit():
+        return ""
+    num = int(value)
+    if num < 1 or num > 99:
+        return ""
+    return str(num)
+
+
+def _instance_entries(data: dict) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    raw = data.get("instances")
+    if not isinstance(raw, dict):
+        return out
+    for key, entry in raw.items():
+        iid = _normalize_instance_id(key)
+        if not iid or not isinstance(entry, dict):
+            continue
+        out[iid] = dict(entry)
+    return out
+
+
+def _entry_active(entry: dict) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return entry.get("active") is not False
+
+
+def _select_instance_data(data: dict, explicit_instance: Optional[str]) -> tuple[str, dict, dict[str, dict]]:
+    instances = _instance_entries(data)
+    if not instances:
+        if explicit_instance and explicit_instance != "1":
+            raise ValueError(f"Codex instance {explicit_instance} not found.")
+        return "1", dict(data), {}
+
+    if explicit_instance:
+        selected = instances.get(explicit_instance)
+        if not selected:
+            raise ValueError(f"Codex instance {explicit_instance} not found.")
+        return explicit_instance, selected, instances
+
+    if len(instances) == 1:
+        iid, selected = next(iter(instances.items()))
+        return iid, selected, instances
+
+    active_instances = [iid for iid, entry in instances.items() if _entry_active(entry)]
+    if len(active_instances) == 1:
+        iid = active_instances[0]
+        selected = instances.get(iid) or {}
+        return iid, selected, instances
+
+    raise ValueError("Multiple Codex instances are active; please specify --instance N.")
+
+
 @dataclass
 class CodexProjectSession:
     session_file: Path
     data: dict
+    selected_instance: str = "1"
+    root_data: Optional[dict] = None
 
     @property
     def terminal(self) -> str:
@@ -67,6 +126,11 @@ class CodexProjectSession:
     @property
     def runtime_dir(self) -> Path:
         return Path(self.data.get("runtime_dir") or self.session_file.parent)
+
+    @property
+    def instance(self) -> str:
+        iid = _normalize_instance_id(self.selected_instance)
+        return iid or "1"
 
     @property
     def start_cmd(self) -> str:
@@ -193,21 +257,79 @@ class CodexProjectSession:
             self._write_back()
 
     def _write_back(self) -> None:
-        payload = json.dumps(self.data, ensure_ascii=False, indent=2) + "\n"
+        payload_data = self.data
+        if isinstance(self.root_data, dict):
+            root = self.root_data
+            instances = root.get("instances")
+            if isinstance(instances, dict):
+                iid = self.instance
+                entry = instances.get(iid)
+                if not isinstance(entry, dict):
+                    entry = {}
+                    instances[iid] = entry
+                for key, value in self.data.items():
+                    if key.startswith("_") or key in {"instances", "default_instance", "instance"}:
+                        continue
+                    entry[key] = value
+                root["provider"] = "codex"
+                root["default_instance"] = str(root.get("default_instance") or "1")
+                if iid == "1":
+                    for key in (
+                        "pane_id",
+                        "pane_title_marker",
+                        "runtime_dir",
+                        "input_fifo",
+                        "output_fifo",
+                        "tmux_log",
+                        "tmux_session",
+                        "terminal",
+                        "work_dir",
+                        "work_dir_norm",
+                        "start_dir",
+                        "active",
+                        "started_at",
+                        "codex_start_cmd",
+                        "start_cmd",
+                        "codex_session_path",
+                        "codex_session_id",
+                        "updated_at",
+                    ):
+                        if key in entry:
+                            root[key] = entry.get(key)
+                payload_data = root
+
+        payload = json.dumps(payload_data, ensure_ascii=False, indent=2) + "\n"
         ok, err = safe_write_session(self.session_file, payload)
         if not ok:
             # Best-effort: never raise (daemon should continue).
             _ = err
 
 
-def load_project_session(work_dir: Path) -> Optional[CodexProjectSession]:
+def load_project_session(work_dir: Path, instance: Optional[str] = None) -> Optional[CodexProjectSession]:
     session_file = find_project_session_file(work_dir)
     if not session_file:
         return None
-    data = _read_json(session_file)
-    if not data:
+    root = _read_json(session_file)
+    if not root:
         return None
-    return CodexProjectSession(session_file=session_file, data=data)
+    explicit = None
+    if instance is not None:
+        explicit = _normalize_instance_id(instance)
+        if not explicit:
+            raise ValueError("--instance must be an integer between 1 and 99")
+
+    selected_iid, selected_data, instances = _select_instance_data(root, explicit)
+    data = dict(root)
+    data.update(selected_data)
+    data["instance"] = selected_iid
+
+    root_data = root if instances else None
+    return CodexProjectSession(
+        session_file=session_file,
+        data=data,
+        selected_instance=selected_iid,
+        root_data=root_data,
+    )
 
 
 def compute_session_key(session: CodexProjectSession) -> str:
@@ -222,4 +344,5 @@ def compute_session_key(session: CodexProjectSession) -> str:
             pid = compute_ccb_project_id(Path(session.work_dir))
         except Exception:
             pid = ""
-    return f"codex:{pid}" if pid else "codex:unknown"
+    iid = session.instance
+    return f"codex:{pid}:{iid}" if pid else f"codex:unknown:{iid}"

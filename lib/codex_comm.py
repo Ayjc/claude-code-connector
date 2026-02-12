@@ -83,17 +83,86 @@ def _handle_codex_log_event(path: Path) -> None:
     if not session_file or not session_file.exists():
         return
     try:
+        session_data = json.loads(session_file.read_text(encoding="utf-8-sig"))
+        if not isinstance(session_data, dict):
+            session_data = {}
+    except Exception:
+        session_data = {}
+    session_id = CodexCommunicator._extract_session_id(path)
+    instance = _select_instance_for_log_binding(session_data, session_id=session_id, log_path=str(path))
+    if not instance:
+        return
+    try:
         from caskd_session import load_project_session
     except Exception:
         return
-    session = load_project_session(work_dir)
+    session = load_project_session(work_dir, instance=instance)
     if not session:
         return
-    session_id = CodexCommunicator._extract_session_id(path)
     try:
         session.update_codex_log_binding(log_path=str(path), session_id=session_id)
     except Exception:
         return
+
+
+def _select_instance_for_log_binding(session_data: dict, *, session_id: str, log_path: str) -> Optional[str]:
+    """
+    Resolve codex instance for log/session binding updates.
+
+    Priority:
+    1) Exact session id match in instances[*].codex_session_id
+    2) Exact log path match in instances[*].codex_session_path
+    3) Single active instance
+    4) Single instance entry
+    5) Valid default_instance
+    """
+    instances_raw = session_data.get("instances")
+    if not isinstance(instances_raw, dict) or not instances_raw:
+        return "1"
+
+    instances: dict[str, dict] = {}
+    for raw_iid, entry in instances_raw.items():
+        iid = str(raw_iid or "").strip()
+        if not iid.isdigit():
+            continue
+        num = int(iid)
+        if num < 1 or num > 99:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        instances[str(num)] = entry
+
+    if not instances:
+        return None
+
+    sid = str(session_id or "").strip()
+    if sid:
+        for iid, entry in instances.items():
+            if str(entry.get("codex_session_id") or "").strip() == sid:
+                return iid
+
+    lp = str(log_path or "").strip()
+    if lp:
+        for iid, entry in instances.items():
+            if str(entry.get("codex_session_path") or "").strip() == lp:
+                return iid
+
+    active = []
+    for iid, entry in instances.items():
+        if entry.get("active") is False:
+            continue
+        active.append(iid)
+    if len(active) == 1:
+        return active[0]
+
+    if len(instances) == 1:
+        return next(iter(instances.keys()))
+
+    default_instance = str(session_data.get("default_instance") or "").strip()
+    if default_instance in instances:
+        return default_instance
+
+    return None
 
 
 def _ensure_codex_watchdog_started() -> None:

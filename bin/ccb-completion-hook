@@ -54,6 +54,16 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
+def _normalize_instance(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value or not value.isdigit():
+        return ""
+    num = int(value)
+    if num < 1 or num > 99:
+        return ""
+    return str(num)
+
+
 def load_session_file(session_path: Path) -> dict:
     """Load session file with utf-8-sig encoding (handles BOM from PowerShell)."""
     try:
@@ -305,6 +315,7 @@ def main() -> int:
     parser.add_argument("--output", default="", help="Output file path (optional)")
     parser.add_argument("--reply", default="", help="Reply text (optional)")
     parser.add_argument("--req-id", default="", help="Request ID")
+    parser.add_argument("--caller-instance", default="", help="Caller instance id (optional)")
     args = parser.parse_args()
 
     provider = args.provider.lower()
@@ -314,6 +325,9 @@ def main() -> int:
     caller = os.environ.get("CCB_CALLER", "").strip().lower()
     if not caller:
         caller = args.caller.lower()
+    caller_instance = _normalize_instance(
+        os.environ.get("CCB_CALLER_INSTANCE", "").strip() or args.caller_instance
+    )
 
     # Read reply from stdin using cross-platform helper
     reply_content = ""
@@ -395,16 +409,52 @@ Result: {reply_content}
     terminal = "tmux"  # default
     session_data = {}
     found_session_path = None
+    selected_session_entry = {}
+    codex_multi_ambiguous = False
 
     for session_path in search_paths:
         if session_path.exists():
             session_data = load_session_file(session_path)
+            selected_session_entry = session_data
             pane_id = session_data.get("pane_id")
             terminal = session_data.get("terminal", "tmux")
+
+            if caller == "codex":
+                instances = session_data.get("instances")
+                selected_entry = None
+                if isinstance(instances, dict) and instances:
+                    if caller_instance:
+                        candidate = instances.get(caller_instance)
+                        if isinstance(candidate, dict):
+                            selected_entry = candidate
+                    else:
+                        candidates = []
+                        for iid, entry in instances.items():
+                            if not isinstance(entry, dict):
+                                continue
+                            if entry.get("active") is False:
+                                continue
+                            entry_pane = str(entry.get("pane_id") or "").strip()
+                            if not entry_pane:
+                                continue
+                            candidates.append((str(iid), entry))
+                        if len(candidates) == 1:
+                            caller_instance = _normalize_instance(candidates[0][0]) or caller_instance
+                            selected_entry = candidates[0][1]
+                        elif len(candidates) > 1:
+                            codex_multi_ambiguous = True
+                            pane_id = None
+                            continue
+                    if isinstance(selected_entry, dict):
+                        pane_id = selected_entry.get("pane_id")
+                        terminal = selected_entry.get("terminal") or session_data.get("terminal", "tmux")
+                        selected_session_entry = selected_entry
             if pane_id:
                 found_session_path = session_path
                 # Validate: check if session's work_dir matches request's work_dir
-                session_work_dir = session_data.get("work_dir", "")
+                session_work_dir = selected_session_entry.get("work_dir", "") if isinstance(selected_session_entry, dict) else ""
+                if not session_work_dir:
+                    session_work_dir = session_data.get("work_dir", "")
                 if work_dir and session_work_dir and session_work_dir != work_dir:
                     # Session file is for a different project, skip it
                     pane_id = None
@@ -412,23 +462,28 @@ Result: {reply_content}
                 break
 
     if not pane_id:
+        if caller == "codex" and codex_multi_ambiguous and not caller_instance:
+            print("[completion-hook] multiple codex instances active but caller instance is missing", file=sys.stderr)
         # No pane_id found, try ask command
         timeout = env_float("CCB_COMPLETION_HOOK_TIMEOUT", 10.0)
         ask_cmd = find_ask_command()
         if not ask_cmd:
             return 0
+        ask_args = [caller, "--notify", "--no-wrap", message]
+        if caller == "codex" and caller_instance:
+            ask_args.extend(["--instance", caller_instance])
         try:
             # Use sys.executable to run ask command on Windows
             if os.name == "nt":
                 result = subprocess.run(
-                    [sys.executable, ask_cmd, caller, "--notify", "--no-wrap", message],
+                    [sys.executable, ask_cmd, *ask_args],
                     capture_output=True,
                     text=True,
                     timeout=timeout
                 )
             else:
                 result = subprocess.run(
-                    [ask_cmd, caller, "--notify", "--no-wrap", message],
+                    [ask_cmd, *ask_args],
                     capture_output=True,
                     text=True,
                     timeout=timeout
@@ -446,17 +501,20 @@ Result: {reply_content}
     ask_cmd = find_ask_command()
     if not ask_cmd:
         return 0
+    ask_args = [caller, "--notify", "--no-wrap", message]
+    if caller == "codex" and caller_instance:
+        ask_args.extend(["--instance", caller_instance])
     try:
         if os.name == "nt":
             subprocess.run(
-                [sys.executable, ask_cmd, caller, "--notify", "--no-wrap", message],
+                [sys.executable, ask_cmd, *ask_args],
                 capture_output=True,
                 text=True,
                 timeout=timeout
             )
         else:
             subprocess.run(
-                [ask_cmd, caller, "--notify", "--no-wrap", message],
+                [ask_cmd, *ask_args],
                 capture_output=True,
                 text=True,
                 timeout=timeout

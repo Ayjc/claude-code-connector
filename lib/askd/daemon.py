@@ -80,8 +80,13 @@ class _UnifiedWorkerPool:
             done_event=threading.Event(),
         )
 
-        session = adapter.load_session(Path(request.work_dir))
-        session_key = adapter.compute_session_key(session) if session else f"{provider_key}:unknown"
+        session_key = adapter.compute_session_key_for_request(request)
+        if not session_key:
+            try:
+                session = adapter.load_session(Path(request.work_dir))
+            except Exception:
+                session = None
+            session_key = adapter.compute_session_key(session) if session else f"{provider_key}:unknown"
 
         pool = self._get_pool(provider_key)
         worker = pool.get_or_create(
@@ -155,6 +160,8 @@ class UnifiedAskDaemon:
                 quiet=bool(msg.get("quiet") or False),
                 message=str(msg.get("message") or ""),
                 caller=caller,
+                instance=str(msg.get("instance") or ""),
+                caller_instance=str(msg.get("caller_instance") or ""),
                 output_path=str(msg.get("output_path")) if msg.get("output_path") else None,
                 req_id=str(msg.get("req_id")) if msg.get("req_id") else None,
                 no_wrap=bool(msg.get("no_wrap") or False),

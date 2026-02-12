@@ -83,15 +83,26 @@ def _get_executor_from_roles() -> Optional[str]:
 
 
 def _usage() -> None:
-    print("Usage: cask [--sync] [--session-file FILE] [--timeout SECONDS] [--output FILE] <message>", file=sys.stderr)
+    print("Usage: cask [--sync] [--session-file FILE] [--timeout SECONDS] [--output FILE] [--instance N] <message>", file=sys.stderr)
 
 
-def _parse_args(argv: list[str]) -> Tuple[Optional[Path], float, str, bool, Optional[str], bool]:
+def _normalize_instance(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value.isdigit():
+        raise ValueError("--instance must be an integer between 1 and 99")
+    num = int(value)
+    if num < 1 or num > 99:
+        raise ValueError("--instance must be an integer between 1 and 99")
+    return str(num)
+
+
+def _parse_args(argv: list[str]) -> Tuple[Optional[Path], float, str, bool, Optional[str], bool, Optional[str]]:
     output: Optional[Path] = None
     timeout: Optional[float] = None
     quiet = False
     sync_mode = False
     session_file: Optional[str] = None
+    instance: Optional[str] = None
     parts: list[str] = []
 
     it = iter(argv[1:])
@@ -110,6 +121,12 @@ def _parse_args(argv: list[str]) -> Tuple[Optional[Path], float, str, bool, Opti
                 session_file = next(it)
             except StopIteration:
                 raise ValueError("--session-file requires a file path")
+            continue
+        if token == "--instance":
+            try:
+                instance = _normalize_instance(next(it))
+            except StopIteration:
+                raise ValueError("--instance requires a value")
             continue
         if token in ("-o", "--output"):
             try:
@@ -133,12 +150,12 @@ def _parse_args(argv: list[str]) -> Tuple[Optional[Path], float, str, bool, Opti
             timeout = float(os.environ.get("CCB_SYNC_TIMEOUT", "-1"))
         except Exception:
             timeout = -1.0
-    return output, timeout, message, quiet, session_file, sync_mode
+    return output, timeout, message, quiet, session_file, sync_mode, instance
 
 
 def main(argv: list[str]) -> int:
     try:
-        output_path, timeout, message, quiet, session_file, sync_mode = _parse_args(argv)
+        output_path, timeout, message, quiet, session_file, sync_mode, instance = _parse_args(argv)
         if not message and not sys.stdin.isatty():
             message = read_stdin_text().strip()
         if not message:
@@ -161,10 +178,33 @@ def main(argv: list[str]) -> int:
 
         # Daemon-only: remove client-side serial lock mode.
         state_file = state_file_from_env(CASK_CLIENT_SPEC.state_file_env)
-        daemon_result = try_daemon_request(CASK_CLIENT_SPEC, work_dir, message, timeout, quiet, state_file, output_path=output_path)
+        caller_instance = (os.environ.get("CCB_CALLER_INSTANCE") or os.environ.get("CODEX_INSTANCE") or "").strip()
+        if caller_instance and not caller_instance.isdigit():
+            caller_instance = ""
+        daemon_result = try_daemon_request(
+            CASK_CLIENT_SPEC,
+            work_dir,
+            message,
+            timeout,
+            quiet,
+            state_file,
+            output_path=output_path,
+            instance=instance,
+            caller_instance=caller_instance or None,
+        )
         if daemon_result is None and maybe_start_daemon(CASK_CLIENT_SPEC, work_dir):
             wait_for_daemon_ready(CASK_CLIENT_SPEC, timeout_s=min(2.0, max(0.2, float(timeout))), state_file=state_file)
-            daemon_result = try_daemon_request(CASK_CLIENT_SPEC, work_dir, message, timeout, quiet, state_file, output_path=output_path)
+            daemon_result = try_daemon_request(
+                CASK_CLIENT_SPEC,
+                work_dir,
+                message,
+                timeout,
+                quiet,
+                state_file,
+                output_path=output_path,
+                instance=instance,
+                caller_instance=caller_instance or None,
+            )
         if daemon_result is not None:
             reply, exit_code = daemon_result
             # Inject guardrail prompt for Claude (skip in sync mode for Codex)

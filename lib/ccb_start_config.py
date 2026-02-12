@@ -22,6 +22,23 @@ class StartConfig:
 _ALLOWED_PROVIDERS = {"codex", "gemini", "opencode", "claude", "droid"}
 
 
+def _normalize_instance_counts(raw: object) -> dict:
+    out: dict[str, int] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        provider = str(key or "").strip().lower()
+        if provider != "codex":
+            continue
+        try:
+            count = int(value)
+        except Exception:
+            continue
+        if 1 <= count <= 99:
+            out[provider] = count
+    return out
+
+
 def _parse_tokens(raw: str) -> list[str]:
     if not raw:
         return []
@@ -62,6 +79,9 @@ def _normalize_providers(tokens: list[str]) -> tuple[list[str], bool]:
 def _parse_config_obj(obj: object) -> dict:
     if isinstance(obj, dict):
         data = dict(obj)
+        counts = _normalize_instance_counts(data.get("instance_counts"))
+        if counts:
+            data["instance_counts"] = counts
         raw_providers = data.get("providers")
         tokens: list[str] = []
         if isinstance(raw_providers, str):

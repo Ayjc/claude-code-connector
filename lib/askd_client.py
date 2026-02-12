@@ -173,6 +173,8 @@ def try_daemon_request(
     quiet: bool,
     state_file: Optional[Path] = None,
     output_path: Path | None = None,
+    instance: str | None = None,
+    caller_instance: str | None = None,
 ) -> Optional[Tuple[str, int]]:
     if not env_bool(spec.enabled_env, True):
         return None
@@ -228,6 +230,12 @@ def try_daemon_request(
         caller = os.environ.get("CCB_CALLER", "").strip()
         if caller:
             payload["caller"] = caller
+        inst = (instance or "").strip()
+        if inst:
+            payload["instance"] = inst
+        caller_inst = (caller_instance or "").strip()
+        if caller_inst:
+            payload["caller_instance"] = caller_inst
         connect_timeout = min(1.0, max(0.1, float(timeout)))
         with socket.create_connection((host, port), timeout=connect_timeout) as sock:
             sock.settimeout(0.5)

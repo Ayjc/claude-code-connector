@@ -382,6 +382,8 @@ ccb                    # Start providers from ccb.config (default: all four)
 ccb codex gemini       # Start both
 ccb codex gemini opencode claude  # Start all four (spaces)
 ccb codex,gemini,opencode,claude  # Start all four (commas)
+ccb codex codex claude  # Start codex#1 + codex#2 + claude
+ccb codex claude --instance codex=2  # Explicit codex instance count
 ccb -r codex gemini     # Resume last session for Codex + Gemini
 ccb -a codex gemini opencode  # Auto-approval mode with multiple providers
 ccb -a -r codex gemini opencode claude  # Auto + resume for all providers
@@ -397,6 +399,7 @@ Note: `ccb up` is removed; use `ccb ...` or configure `ccb.config`.
 | :--- | :--- | :--- |
 | `-r` | Resume previous session context | `ccb -r` |
 | `-a` | Auto-mode, skip permission prompts | `ccb -a` |
+| `--instance` | Provider instance count override (currently `codex` only) | `ccb codex claude --instance codex=2` |
 | `-h` | Show help information | `ccb -h` |
 | `-v` | Show version and check for updates | `ccb -v` |
 
@@ -419,6 +422,7 @@ Advanced JSON (optional, for flags or custom cmd pane):
 ```json
 {
   "providers": ["codex", "gemini", "opencode", "claude"],
+  "instance_counts": { "codex": 2 },
   "cmd": { "enabled": true, "title": "CCB-Cmd", "start_cmd": "bash" },
   "flags": { "auto": false, "resume": false }
 }
@@ -570,6 +574,7 @@ Once started, collaborate naturally. Claude will detect when to delegate tasks.
   - Foreground uses sync send and disables completion hook unless `CCB_COMPLETION_HOOK_ENABLED` is set
   - Supports `--notify` for short synchronous notifications
   - Supports `CCB_CALLER` (default: `codex` in Codex sessions, otherwise `claude`)
+  - For codex multi-instance: use `--instance N` (e.g. `ask codex --instance 2 "..."`)
 
 - **`ping <provider>`** - Unified connectivity test
   - Checks if the specified provider's daemon is online

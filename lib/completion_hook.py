@@ -28,6 +28,7 @@ def _run_hook_async(
     reply: str,
     req_id: str,
     caller: str,
+    caller_instance: str = "",
     email_req_id: str = "",
     email_msg_id: str = "",
     email_from: str = "",
@@ -69,12 +70,16 @@ def _run_hook_async(
                 "--caller", caller,
                 "--req-id", req_id,
             ]
+            if caller_instance:
+                cmd.extend(["--caller-instance", caller_instance])
             if output_file:
                 cmd.extend(["--output", output_file])
 
             # Set up environment with caller and email-related vars
             env = os.environ.copy()
             env["CCB_CALLER"] = caller  # Ensure caller is passed via env var
+            if caller_instance:
+                env["CCB_CALLER_INSTANCE"] = caller_instance
             if email_req_id:
                 env["CCB_EMAIL_REQ_ID"] = email_req_id
             if email_msg_id:
@@ -109,6 +114,7 @@ def notify_completion(
     req_id: str,
     done_seen: bool,
     caller: str = "claude",
+    caller_instance: str = "",
     email_req_id: str = "",
     email_msg_id: str = "",
     email_from: str = "",
@@ -132,4 +138,15 @@ def notify_completion(
     if not done_seen:
         return
 
-    _run_hook_async(provider, output_file, reply, req_id, caller, email_req_id, email_msg_id, email_from, work_dir)
+    _run_hook_async(
+        provider,
+        output_file,
+        reply,
+        req_id,
+        caller,
+        caller_instance,
+        email_req_id,
+        email_msg_id,
+        email_from,
+        work_dir,
+    )

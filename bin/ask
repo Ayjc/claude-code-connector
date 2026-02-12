@@ -96,6 +96,8 @@ def _send_via_unified_daemon(
     timeout: float,
     no_wrap: bool,
     caller: str,
+    instance: str = "",
+    caller_instance: str = "",
 ) -> int:
     """Send request via unified askd daemon."""
     import json
@@ -130,6 +132,10 @@ def _send_via_unified_daemon(
         "no_wrap": no_wrap,
         "caller": caller,
     }
+    if instance:
+        req["instance"] = instance
+    if caller_instance:
+        req["caller_instance"] = caller_instance
 
     # Pass email-related env vars for email caller
     if caller == "email":
@@ -237,6 +243,19 @@ def _usage() -> None:
     print("  --foreground            Run in foreground (no nohup/background)", file=sys.stderr)
     print("  --background            Force background mode", file=sys.stderr)
     print("  --no-wrap               Don't wrap with CCB protocol markers", file=sys.stderr)
+    print("  --instance N            Codex instance id (only valid for provider=codex)", file=sys.stderr)
+
+
+def _normalize_instance(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    if not value.isdigit():
+        raise ValueError("--instance must be an integer between 1 and 99")
+    num = int(value)
+    if num < 1 or num > 99:
+        raise ValueError("--instance must be an integer between 1 and 99")
+    return str(num)
 
 
 def main(argv: list[str]) -> int:
@@ -263,6 +282,7 @@ def main(argv: list[str]) -> int:
     notify_mode = False
     no_wrap = False
     foreground_mode = _default_foreground()
+    instance = ""
     parts: list[str] = []
 
     it = iter(argv[2:])
@@ -292,6 +312,16 @@ def main(argv: list[str]) -> int:
         if token == "--no-wrap":
             no_wrap = True
             continue
+        if token == "--instance":
+            try:
+                instance = _normalize_instance(next(it))
+            except StopIteration:
+                print("[ERROR] --instance requires a value", file=sys.stderr)
+                return EXIT_ERROR
+            except ValueError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                return EXIT_ERROR
+            continue
         parts.append(token)
 
     message = " ".join(parts).strip()
@@ -300,15 +330,39 @@ def main(argv: list[str]) -> int:
     if not message:
         print("[ERROR] Message cannot be empty", file=sys.stderr)
         return EXIT_ERROR
+    if instance and provider != "codex":
+        print("[ERROR] --instance currently only supports provider=codex", file=sys.stderr)
+        return EXIT_ERROR
+
+    caller = _default_caller()
+    caller_instance = ""
+    if caller == "codex":
+        raw_caller_instance = (os.environ.get("CCB_CALLER_INSTANCE") or os.environ.get("CODEX_INSTANCE") or "").strip()
+        if raw_caller_instance:
+            try:
+                caller_instance = _normalize_instance(raw_caller_instance)
+            except ValueError:
+                caller_instance = ""
+        else:
+            caller_instance = "1"
 
     # Use unified daemon if enabled (CCB_UNIFIED_ASKD=1)
     if _use_unified_daemon() and foreground_mode:
-        caller = _default_caller()
-        return _send_via_unified_daemon(provider, message, timeout, no_wrap, caller)
+        return _send_via_unified_daemon(
+            provider,
+            message,
+            timeout,
+            no_wrap,
+            caller,
+            instance=instance,
+            caller_instance=caller_instance,
+        )
 
     # Notify mode: sync send, no wait for reply (used for hook notifications)
     if notify_mode:
         cmd = [daemon_cmd, "--sync"]
+        if instance:
+            cmd.extend(["--instance", instance])
         if no_wrap:
             cmd.append("--no-wrap")
         try:
@@ -329,11 +383,15 @@ def main(argv: list[str]) -> int:
     # Foreground mode: run provider directly (avoid background cleanup in managed envs)
     if foreground_mode:
         cmd = [daemon_cmd, "--sync", "--timeout", str(timeout)]
+        if instance:
+            cmd.extend(["--instance", instance])
         if no_wrap and provider == "claude":
             cmd.append("--no-wrap")
         env = os.environ.copy()
         if not env.get("CCB_CALLER"):
-            env["CCB_CALLER"] = _default_caller()
+            env["CCB_CALLER"] = caller
+        if caller_instance and not env.get("CCB_CALLER_INSTANCE"):
+            env["CCB_CALLER_INSTANCE"] = caller_instance
         try:
             result = subprocess.run(cmd, input=message, text=True, env=env)
             return result.returncode
@@ -353,8 +411,6 @@ def main(argv: list[str]) -> int:
     _cleanup_task_logs(log_dir)
 
     # Detect caller from environment or default to "claude"
-    caller = _default_caller()
-
     # Get the path to this script for recursive call with --foreground
     ask_cmd = str(Path(__file__).resolve())
 
@@ -375,8 +431,9 @@ def main(argv: list[str]) -> int:
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:CCB_REQ_ID = "{task_id}"
 $env:CCB_CALLER = "{caller}"
+$env:CCB_CALLER_INSTANCE = "{caller_instance}"
 $env:CCB_WORK_DIR = "{os.getcwd()}"
-Get-Content -Path "{msg_file}" -Encoding UTF8 | python "{ask_cmd}" {provider} --foreground --timeout {timeout}
+Get-Content -Path "{msg_file}" -Encoding UTF8 | python "{ask_cmd}" {provider} --foreground --timeout {timeout}{(" --instance " + instance) if instance else ""}
 '''
         script_file.write_text(script_content, encoding="utf-8")
 
@@ -404,8 +461,9 @@ Get-Content -Path "{msg_file}" -Encoding UTF8 | python "{ask_cmd}" {provider} --
         bg_script = f'''
 export CCB_REQ_ID="{task_id}"
 export CCB_CALLER="{caller}"
+export CCB_CALLER_INSTANCE="{caller_instance}"
 export CCB_WORK_DIR="{os.getcwd()}"
-{run_dir_line}{email_env_lines}python3 "{ask_cmd}" {provider} --foreground --timeout {timeout} <<'ASKEOF'
+{run_dir_line}{email_env_lines}python3 "{ask_cmd}" {provider} --foreground --timeout {timeout}{(" --instance " + instance) if instance else ""} <<'ASKEOF'
 {message}
 ASKEOF
 '''

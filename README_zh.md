@@ -338,6 +338,8 @@ ccb                    # 按 ccb.config 启动（默认：四个全开）
 ccb codex gemini       # 同时启动两个
 ccb codex gemini opencode claude  # 同时启动四个（空格分隔）
 ccb codex,gemini,opencode,claude  # 同时启动四个（逗号分隔）
+ccb codex codex claude  # 启动 codex#1 + codex#2 + claude
+ccb codex claude --instance codex=2  # 显式指定 codex 实例数
 ccb -r codex gemini     # 恢复 Codex + Gemini 上次会话
 ccb -a codex gemini opencode  # 自动权限模式，启动多个
 ccb -a -r codex gemini opencode claude  # 自动 + 恢复（四个全开）
@@ -353,6 +355,7 @@ tmux 提示：CCB 的 tmux 状态栏/窗格标题主题只会在 CCB 运行期�
 | :--- | :--- | :--- |
 | `-r` | 恢复上次会话上下文 | `ccb -r` |
 | `-a` | 全自动模式，跳过权限确认 | `ccb -a` |
+| `--instance` | provider 实例数覆盖（当前仅支持 `codex`） | `ccb codex claude --instance codex=2` |
 | `-h` | 查看详细帮助信息 | `ccb -h` |
 | `-v` | 查看当前版本和检测更新 | `ccb -v` |
 
@@ -372,6 +375,16 @@ codex,gemini,opencode,claude,cmd
 ```
 
 cmd pane 作为第一个额外 pane 参与布局，不会改变当前 pane 对应的 AI。
+
+高级 JSON（可选，支持多实例）：
+```json
+{
+  "providers": ["codex", "gemini", "opencode", "claude"],
+  "instance_counts": { "codex": 2 },
+  "cmd": { "enabled": true, "title": "CCB-Cmd", "start_cmd": "bash" },
+  "flags": { "auto": false, "resume": false }
+}
+```
 
 ### 后续更新
 ```bash
@@ -577,6 +590,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile
   - 前台执行使用同步发送，默认关闭 completion hook（除非设置 `CCB_COMPLETION_HOOK_ENABLED`）
   - 支持 `--notify` 用于短消息同步通知
   - 支持 `CCB_CALLER` 指定发起者（Codex 环境默认 codex，其它默认 claude）
+  - codex 多实例可使用 `--instance N`（例如 `ask codex --instance 2 "..."`）
 
 - **`ping <provider>`** - 统一的连通性测试命令
   - 测试指定 provider 的 daemon 是否在线

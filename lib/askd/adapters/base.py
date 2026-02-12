@@ -21,6 +21,8 @@ class ProviderRequest:
     quiet: bool
     message: str
     caller: str
+    instance: str = ""
+    caller_instance: str = ""
     output_path: Optional[str] = None
     req_id: Optional[str] = None
     no_wrap: bool = False
@@ -98,6 +100,10 @@ class BaseProviderAdapter(ABC):
     def compute_session_key(self, session: Any) -> str:
         """Compute a unique session key for routing."""
         ...
+
+    def compute_session_key_for_request(self, request: ProviderRequest) -> Optional[str]:
+        """Optional fast-path: compute session key directly from request fields."""
+        return None
 
     @abstractmethod
     def handle_task(self, task: QueuedTask) -> ProviderResult:
