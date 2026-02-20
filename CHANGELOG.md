@@ -2,15 +2,15 @@
 
 ## Unreleased
 
-### 🚀 Codex Multi-Instance (Preview)
+### 🚀 Multi-Instance Support (Codex + Claude)
 
-- `ccb` supports codex multi-instance startup:
-  - duplicate shorthand: `ccb codex codex claude`
-  - explicit override: `--instance codex=N` (currently codex only)
-- `.codex-session` now supports `instances` map while keeping top-level instance-1 compatibility fields.
-- `ask` / `cask` now support `--instance N` for codex routing.
-- In multi-instance mode, `ask codex` without `--instance` returns an explicit error.
-- Completion hook propagates `caller_instance` and routes notifications back to the caller codex instance.
+- `ccb` supports multi-instance startup for both Codex and Claude:
+  - duplicate shorthand: `ccb codex codex claude` or `ccb claude claude codex`
+  - explicit override: `--instance codex=N` or `--instance claude=N`
+- `.codex-session` and `.claude-session` now support `instances` map while keeping top-level instance-1 compatibility fields.
+- `ask` / `cask` now support `--instance N` for both codex and claude routing.
+- In multi-instance mode, `ask codex` or `ask claude` without `--instance` returns an explicit error when multiple instances are active.
+- Completion hook propagates `caller_instance` and routes notifications back to the correct caller instance.
 
 ## v5.2.3 (2026-02-09)
 

@@ -410,7 +410,7 @@ Result: {reply_content}
     session_data = {}
     found_session_path = None
     selected_session_entry = {}
-    codex_multi_ambiguous = False
+    multi_instance_ambiguous = False
 
     for session_path in search_paths:
         if session_path.exists():
@@ -419,7 +419,7 @@ Result: {reply_content}
             pane_id = session_data.get("pane_id")
             terminal = session_data.get("terminal", "tmux")
 
-            if caller == "codex":
+            if caller in ("codex", "claude"):
                 instances = session_data.get("instances")
                 selected_entry = None
                 if isinstance(instances, dict) and instances:
@@ -442,7 +442,7 @@ Result: {reply_content}
                             caller_instance = _normalize_instance(candidates[0][0]) or caller_instance
                             selected_entry = candidates[0][1]
                         elif len(candidates) > 1:
-                            codex_multi_ambiguous = True
+                            multi_instance_ambiguous = True
                             pane_id = None
                             continue
                     if isinstance(selected_entry, dict):
@@ -462,15 +462,15 @@ Result: {reply_content}
                 break
 
     if not pane_id:
-        if caller == "codex" and codex_multi_ambiguous and not caller_instance:
-            print("[completion-hook] multiple codex instances active but caller instance is missing", file=sys.stderr)
+        if caller in ("codex", "claude") and multi_instance_ambiguous and not caller_instance:
+            print(f"[completion-hook] multiple {caller} instances active but caller instance is missing", file=sys.stderr)
         # No pane_id found, try ask command
         timeout = env_float("CCB_COMPLETION_HOOK_TIMEOUT", 10.0)
         ask_cmd = find_ask_command()
         if not ask_cmd:
             return 0
         ask_args = [caller, "--notify", "--no-wrap", message]
-        if caller == "codex" and caller_instance:
+        if caller in ("codex", "claude") and caller_instance:
             ask_args.extend(["--instance", caller_instance])
         try:
             # Use sys.executable to run ask command on Windows
@@ -502,7 +502,7 @@ Result: {reply_content}
     if not ask_cmd:
         return 0
     ask_args = [caller, "--notify", "--no-wrap", message]
-    if caller == "codex" and caller_instance:
+    if caller in ("codex", "claude") and caller_instance:
         ask_args.extend(["--instance", caller_instance])
     try:
         if os.name == "nt":

@@ -19,6 +19,7 @@ from completion_hook import notify_completion
 from laskd_registry import get_session_registry
 from laskd_protocol import extract_reply_for_req, is_done_text, wrap_claude_prompt
 from laskd_session import compute_session_key, load_project_session
+from project_id import compute_ccb_project_id
 from providers import LASKD_SPEC
 from session_file_watcher import HAS_WATCHDOG
 from terminal import get_backend_for_session
@@ -480,11 +481,23 @@ class ClaudeAdapter(BaseProviderAdapter):
         except Exception:
             pass
 
-    def load_session(self, work_dir: Path) -> Optional[Any]:
-        return load_project_session(work_dir)
+    def load_session(self, work_dir: Path, instance: str | None = None) -> Optional[Any]:
+        return load_project_session(work_dir, instance=instance)
 
     def compute_session_key(self, session: Any) -> str:
         return compute_session_key(session) if session else "claude:unknown"
+
+    def compute_session_key_for_request(self, request: ProviderRequest) -> Optional[str]:
+        pid = ""
+        try:
+            pid = compute_ccb_project_id(Path(request.work_dir))
+        except Exception:
+            pid = ""
+        inst = str(request.instance or "").strip()
+        base = f"claude:{pid}" if pid else "claude:unknown"
+        if inst.isdigit() and inst != "1":
+            return f"{base}:{inst}"
+        return base if pid else None
 
     def handle_task(self, task: QueuedTask) -> ProviderResult:
         started_ms = _now_ms()
@@ -492,7 +505,16 @@ class ClaudeAdapter(BaseProviderAdapter):
         work_dir = Path(req.work_dir)
         _write_log(f"[INFO] start provider=claude req_id={task.req_id} work_dir={req.work_dir}")
 
-        session = load_project_session(work_dir)
+        try:
+            session = load_project_session(work_dir, instance=req.instance or None)
+        except ValueError as exc:
+            return ProviderResult(
+                exit_code=1,
+                reply=str(exc),
+                req_id=task.req_id,
+                session_key="claude:unknown",
+                done_seen=False,
+            )
         session_key = self.compute_session_key(session)
 
         if not session:
@@ -559,6 +581,7 @@ class ClaudeAdapter(BaseProviderAdapter):
             req_id=result.req_id,
             done_seen=result.done_seen,
             caller=req.caller,
+            caller_instance=req.caller_instance,
             email_req_id=req.email_req_id,
             email_msg_id=req.email_msg_id,
             email_from=req.email_from,

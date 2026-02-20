@@ -243,7 +243,7 @@ def _usage() -> None:
     print("  --foreground            Run in foreground (no nohup/background)", file=sys.stderr)
     print("  --background            Force background mode", file=sys.stderr)
     print("  --no-wrap               Don't wrap with CCB protocol markers", file=sys.stderr)
-    print("  --instance N            Codex instance id (only valid for provider=codex)", file=sys.stderr)
+    print("  --instance N            Instance id (valid for provider=codex or provider=claude)", file=sys.stderr)
 
 
 def _normalize_instance(raw: str) -> str:
@@ -330,14 +330,16 @@ def main(argv: list[str]) -> int:
     if not message:
         print("[ERROR] Message cannot be empty", file=sys.stderr)
         return EXIT_ERROR
-    if instance and provider != "codex":
-        print("[ERROR] --instance currently only supports provider=codex", file=sys.stderr)
+    if instance and provider not in ("codex", "claude"):
+        print("[ERROR] --instance currently only supports provider=codex or provider=claude", file=sys.stderr)
         return EXIT_ERROR
 
     caller = _default_caller()
     caller_instance = ""
-    if caller == "codex":
-        raw_caller_instance = (os.environ.get("CCB_CALLER_INSTANCE") or os.environ.get("CODEX_INSTANCE") or "").strip()
+    if caller in ("codex", "claude"):
+        env_key = "CCB_CALLER_INSTANCE"
+        fallback_key = "CODEX_INSTANCE" if caller == "codex" else "CLAUDE_INSTANCE"
+        raw_caller_instance = (os.environ.get(env_key) or os.environ.get(fallback_key) or "").strip()
         if raw_caller_instance:
             try:
                 caller_instance = _normalize_instance(raw_caller_instance)

@@ -85,10 +85,54 @@ def _now_str() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _instance_entries(data: dict) -> dict[str, dict]:
+    raw = data.get("instances")
+    if not isinstance(raw, dict):
+        return {}
+    entries: dict[str, dict] = {}
+    for k, v in raw.items():
+        iid = str(k or "").strip()
+        if iid.isdigit() and 1 <= int(iid) <= 99 and isinstance(v, dict):
+            entries[str(int(iid))] = v
+    return entries
+
+
+def _normalize_instance_id(raw: str) -> str | None:
+    s = str(raw or "").strip()
+    if not s.isdigit():
+        return None
+    n = int(s)
+    if 1 <= n <= 99:
+        return str(n)
+    return None
+
+
+def _select_instance_data(data: dict, explicit: str | None) -> tuple[str, dict, dict[str, dict]]:
+    instances = _instance_entries(data)
+    if not instances:
+        if explicit and explicit != "1":
+            raise ValueError(f"Claude instance {explicit} not found.")
+        return "1", dict(data), {}
+    if explicit:
+        selected = instances.get(explicit)
+        if not selected:
+            raise ValueError(f"Claude instance {explicit} not found.")
+        return explicit, selected, instances
+    if len(instances) == 1:
+        iid, selected = next(iter(instances.items()))
+        return iid, selected, instances
+    active = [iid for iid, e in instances.items() if e.get("active") is not False]
+    if len(active) == 1:
+        return active[0], instances[active[0]], instances
+    raise ValueError("Multiple Claude instances are active; please specify --instance N.")
+
+
 @dataclass
 class ClaudeProjectSession:
     session_file: Path
     data: dict
+    selected_instance: str = "1"
+    root_data: dict | None = None
     @property
     def terminal(self) -> str:
         return (self.data.get("terminal") or "tmux").strip() or "tmux"
@@ -193,26 +237,78 @@ class ClaudeProjectSession:
             if changed and old_path:
                 _maybe_auto_extract_old_session(old_path, Path(self.work_dir))
 
+    @property
+    def instance(self) -> str:
+        return str(self.selected_instance or "1").strip() or "1"
+
     def _write_back(self) -> None:
-        payload = json.dumps(self.data, ensure_ascii=False, indent=2) + "\n"
+        payload_data = self.data
+        if isinstance(self.root_data, dict):
+            root = self.root_data
+            instances = root.get("instances")
+            if isinstance(instances, dict):
+                iid = self.instance
+                entry = instances.get(iid)
+                if not isinstance(entry, dict):
+                    entry = {}
+                    instances[iid] = entry
+                for key, value in self.data.items():
+                    if key.startswith("_") or key in {"instances", "default_instance", "instance"}:
+                        continue
+                    entry[key] = value
+                root["provider"] = "claude"
+                root["default_instance"] = str(root.get("default_instance") or "1")
+                if iid == "1":
+                    for key in (
+                        "pane_id",
+                        "pane_title_marker",
+                        "terminal",
+                        "work_dir",
+                        "work_dir_norm",
+                        "start_dir",
+                        "active",
+                        "started_at",
+                        "claude_session_path",
+                        "claude_session_id",
+                        "updated_at",
+                    ):
+                        if key in entry:
+                            root[key] = entry.get(key)
+                payload_data = root
+
+        payload = json.dumps(payload_data, ensure_ascii=False, indent=2) + "\n"
         ok, _err = safe_write_session(self.session_file, payload)
         if not ok:
             return
 
 
-def load_project_session(work_dir: Path) -> Optional[ClaudeProjectSession]:
+def load_project_session(work_dir: Path, instance: str | None = None) -> Optional[ClaudeProjectSession]:
     resolution = resolve_claude_session(work_dir)
     if not resolution:
         return None
-    data = dict(resolution.data or {})
-    if not data:
+    root = dict(resolution.data or {})
+    if not root:
         return None
-    data.setdefault("work_dir", str(work_dir))
-    if not data.get("ccb_project_id"):
+    root.setdefault("work_dir", str(work_dir))
+    if not root.get("ccb_project_id"):
         try:
-            data["ccb_project_id"] = compute_ccb_project_id(Path(data.get("work_dir") or work_dir))
+            root["ccb_project_id"] = compute_ccb_project_id(Path(root.get("work_dir") or work_dir))
         except Exception:
             pass
+
+    explicit = None
+    if instance is not None:
+        explicit = _normalize_instance_id(instance)
+        if not explicit:
+            raise ValueError("--instance must be an integer between 1 and 99")
+
+    selected_iid, selected_data, instances = _select_instance_data(root, explicit)
+    data = dict(root)
+    data.update(selected_data)
+    data["instance"] = selected_iid
+
+    root_data = root if instances else None
+
     session_file = resolution.session_file
     if not session_file:
         try:
@@ -223,7 +319,12 @@ def load_project_session(work_dir: Path) -> Optional[ClaudeProjectSession]:
             session_file = None
     if not session_file:
         return None
-    return ClaudeProjectSession(session_file=session_file, data=data)
+    return ClaudeProjectSession(
+        session_file=session_file,
+        data=data,
+        selected_instance=selected_iid,
+        root_data=root_data,
+    )
 
 
 def compute_session_key(session: ClaudeProjectSession) -> str:
@@ -233,4 +334,6 @@ def compute_session_key(session: ClaudeProjectSession) -> str:
             pid = compute_ccb_project_id(Path(session.work_dir))
         except Exception:
             pid = ""
-    return f"claude:{pid}" if pid else "claude:unknown"
+    iid = session.selected_instance
+    base = f"claude:{pid}" if pid else "claude:unknown"
+    return f"{base}:{iid}" if iid and iid != "1" else base
