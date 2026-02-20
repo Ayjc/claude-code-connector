@@ -601,7 +601,7 @@ class AILauncher:
             return counts
         for key, value in raw.items():
             provider = str(key or "").strip().lower()
-            if provider != "codex":
+            if provider not in ("codex", "claude"):
                 continue
             try:
                 count = int(value)
@@ -613,24 +613,26 @@ class AILauncher:
 
     def _provider_instance_count(self, provider: str) -> int:
         base = (provider or "").strip().lower()
-        if base != "codex":
+        if base not in ("codex", "claude"):
             return 1
-        return max(1, int(self.instance_counts.get("codex", 1)))
+        return max(1, int(self.instance_counts.get(base, 1)))
 
     def _target_key(self, provider: str, instance: str = "1") -> str:
         base = (provider or "").strip().lower()
-        if base == "codex":
+        if base in ("codex", "claude"):
             iid = str(instance or "1").strip() or "1"
-            return f"codex#{iid}"
+            return f"{base}#{iid}"
         return base
 
     def _split_target_key(self, target: str) -> tuple[str, str]:
         value = (target or "").strip().lower()
-        if value.startswith("codex#"):
-            iid = value.split("#", 1)[1].strip() or "1"
-            if iid.isdigit() and 1 <= int(iid) <= 99:
-                return "codex", str(int(iid))
-            return "codex", "1"
+        for prefix in ("codex#", "claude#"):
+            if value.startswith(prefix):
+                base = prefix[:-1]
+                iid = value.split("#", 1)[1].strip() or "1"
+                if iid.isdigit() and 1 <= int(iid) <= 99:
+                    return base, str(int(iid))
+                return base, "1"
         return value, "1"
 
     def _expanded_provider_targets(self) -> list[str]:
@@ -638,7 +640,7 @@ class AILauncher:
         for provider in self.providers:
             base = (provider or "").strip().lower()
             count = self._provider_instance_count(base)
-            if base == "codex":
+            if base in ("codex", "claude"):
                 for i in range(1, count + 1):
                     targets.append(self._target_key(base, str(i)))
             elif base:
@@ -1014,7 +1016,7 @@ class AILauncher:
         provider_base, provider_instance = self._split_target_key(provider)
         provider_label = (
             f"{provider_base.capitalize()}#{provider_instance}"
-            if provider_base == "codex"
+            if provider_base in ("codex", "claude")
             else provider_base.capitalize()
         )
         # Handle case when no terminal detected
@@ -1066,6 +1068,8 @@ class AILauncher:
 
         if provider_base == "codex":
             return self._start_codex_tmux(parent_pane=parent_pane, direction=direction, codex_instance=provider_instance)
+        elif provider_base == "claude":
+            return self._start_claude_pane(parent_pane=parent_pane, direction=direction, claude_instance=provider_instance)
         elif provider_base == "gemini":
             return self._start_gemini_tmux(parent_pane=parent_pane, direction=direction)
         elif provider_base == "opencode":
@@ -1084,7 +1088,7 @@ class AILauncher:
         parent_pane: str | None = None,
         direction: str | None = None,
     ) -> str | None:
-        runtime_key = ("codex" if str(instance or "1") == "1" else f"codex-{instance}") if provider == "codex" else provider
+        runtime_key = (provider if str(instance or "1") == "1" else f"{provider}-{instance}") if provider in ("codex", "claude") else provider
         runtime = self.runtime_dir / runtime_key
         runtime.mkdir(parents=True, exist_ok=True)
 
@@ -1100,7 +1104,7 @@ class AILauncher:
             except StopIteration:
                 use_parent = None
 
-        pane_title_marker = f"CCB-{provider.capitalize()}#{instance}" if provider == "codex" else f"CCB-{provider.capitalize()}"
+        pane_title_marker = f"CCB-{provider.capitalize()}#{instance}" if provider in ("codex", "claude") else f"CCB-{provider.capitalize()}"
         title_cmd = _build_pane_title_cmd(pane_title_marker)
         env_overrides = self._managed_env_overrides()
         if provider == "codex":
@@ -1114,6 +1118,12 @@ class AILauncher:
                     "CODEX_OUTPUT_FIFO": str(output_fifo),
                     "CODEX_TERMINAL": "wezterm",
                     "CODEX_INSTANCE": str(instance or "1"),
+                }
+            )
+        elif provider == "claude":
+            env_overrides.update(
+                {
+                    "CLAUDE_INSTANCE": str(instance or "1"),
                 }
             )
         full_cmd = title_cmd + self._build_env_prefix(env_overrides) + _build_export_path_cmd(self.script_dir / "bin") + start_cmd
@@ -1135,6 +1145,18 @@ class AILauncher:
                 codex_start_cmd=start_cmd,
                 codex_instance=instance,
             )
+        elif provider == "claude":
+            try:
+                self._write_local_claude_session(
+                    session_id=self._read_local_claude_session_id(),
+                    active=True,
+                    pane_id=str(pane_id or ""),
+                    pane_title_marker=pane_title_marker,
+                    terminal="wezterm",
+                    claude_instance=instance,
+                )
+            except Exception:
+                pass
         elif provider == "gemini":
             self._write_gemini_session(runtime, None, pane_id=pane_id, pane_title_marker=pane_title_marker, start_cmd=start_cmd)
         elif provider == "opencode":
@@ -1145,7 +1167,7 @@ class AILauncher:
             print(f"❌ {t('unknown_provider', provider=provider)}")
             return None
 
-        provider_label = f"{provider.capitalize()}#{instance}" if provider == "codex" else provider.capitalize()
+        provider_label = f"{provider.capitalize()}#{instance}" if provider in ("codex", "claude") else provider.capitalize()
         print(f"✅ {t('started_backend', provider=provider_label, terminal='wezterm pane', pane_id=pane_id)}")
         return pane_id
 
@@ -1247,6 +1269,7 @@ class AILauncher:
         pane_id: str | None = None,
         pane_title_marker: str | None = None,
         terminal: str | None = None,
+        claude_instance: str = "1",
     ) -> None:
         path = self._claude_session_file()
         writable, reason, fix = check_session_writable(path)
@@ -1255,9 +1278,81 @@ class AILauncher:
             print(f"💡 Fix: {fix}", file=sys.stderr)
             return
 
+        iid = str(claude_instance or "1").strip() or "1"
         data = self._read_json_file(path) if path.exists() else {}
         work_dir = self.project_root
         now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        entry = {
+            "instance": iid,
+            "session_id": self.session_id,
+            "terminal": terminal or self.terminal_type,
+            "work_dir": str(work_dir),
+            "work_dir_norm": _normalize_path_for_match(str(work_dir)),
+            "start_dir": str(self.invocation_dir),
+            "active": bool(active),
+            "started_at": now,
+            "updated_at": now,
+        }
+        if session_id:
+            entry["claude_session_id"] = session_id
+        if pane_id:
+            entry["pane_id"] = pane_id
+        if pane_title_marker:
+            entry["pane_title_marker"] = pane_title_marker
+        try:
+            entry["ccb_project_id"] = compute_ccb_project_id(work_dir)
+        except Exception:
+            entry["ccb_project_id"] = data.get("ccb_project_id")
+
+        # Multi-instance support (mirrors _write_codex_session pattern)
+        has_existing_instances = isinstance(data.get("instances"), dict)
+        use_instances = has_existing_instances or iid != "1"
+        if use_instances:
+            instances = data.get("instances")
+            if not isinstance(instances, dict):
+                instances = {}
+            if "1" not in instances:
+                # Migrate legacy top-level data into instance "1"
+                legacy_entry = {}
+                for key in (
+                    "instance",
+                    "session_id",
+                    "claude_session_id",
+                    "ccb_project_id",
+                    "terminal",
+                    "work_dir",
+                    "work_dir_norm",
+                    "start_dir",
+                    "active",
+                    "started_at",
+                    "updated_at",
+                    "pane_id",
+                    "pane_title_marker",
+                ):
+                    if key in data:
+                        legacy_entry[key] = data.get(key)
+                if legacy_entry:
+                    legacy_entry.setdefault("instance", "1")
+                    instances["1"] = legacy_entry
+            current = instances.get(iid)
+            if not isinstance(current, dict):
+                current = {}
+            current.update(entry)
+            instances[iid] = current
+            # Single-instance claude mode should not keep old extra instances active
+            if self._provider_instance_count("claude") <= 1:
+                for key, inst in instances.items():
+                    if str(key) == "1":
+                        continue
+                    if not isinstance(inst, dict):
+                        continue
+                    inst["active"] = False
+            data["instances"] = instances
+            data["provider"] = "claude"
+            data["default_instance"] = "1"
+
+        # Always update top-level fields
         if session_id:
             data["claude_session_id"] = session_id
         data["session_id"] = self.session_id
@@ -1272,10 +1367,11 @@ class AILauncher:
         data["active"] = bool(active)
         data["started_at"] = data.get("started_at") or now
         data["updated_at"] = now
-        if pane_id:
-            data["pane_id"] = pane_id
-        if pane_title_marker:
-            data["pane_title_marker"] = pane_title_marker
+        if not use_instances or iid == "1":
+            if pane_id:
+                data["pane_id"] = pane_id
+            if pane_title_marker:
+                data["pane_title_marker"] = pane_title_marker
 
         payload = json.dumps(data, ensure_ascii=False, indent=2)
         ok, err = safe_write_session(path, payload)
@@ -2488,7 +2584,7 @@ class AILauncher:
     def _start_provider_in_current_pane(self, provider: str) -> int:
         provider_base, provider_instance = self._split_target_key(provider)
         if provider_base == "claude":
-            return self._start_claude()
+            return self._start_claude(claude_instance=provider_instance)
         if provider_base == "codex":
             return self._start_codex_current_pane(codex_instance=provider_instance)
         if provider_base == "gemini":
@@ -3034,7 +3130,7 @@ class AILauncher:
             run_cwd = str(resume_dir)
         return cmd, run_cwd, has_history
 
-    def _start_claude(self) -> int:
+    def _start_claude(self, claude_instance: str = "1") -> int:
         print(f"🚀 {t('starting_claude')}")
         env = self._build_claude_env()
 
@@ -3075,9 +3171,10 @@ class AILauncher:
             print(f"\n⚠️ {t('user_interrupted')}")
             return 130
 
-    def _start_claude_pane(self, *, parent_pane: str | None, direction: str | None) -> str | None:
+    def _start_claude_pane(self, *, parent_pane: str | None, direction: str | None, claude_instance: str = "1") -> str | None:
         print(f"🚀 {t('starting_claude')}")
         env_overrides = self._claude_env_overrides()
+        env_overrides["CLAUDE_INSTANCE"] = str(claude_instance or "1")
 
         try:
             cmd_parts, run_cwd, has_history = self._claude_start_plan()
@@ -3091,9 +3188,13 @@ class AILauncher:
             else:
                 print(f"ℹ️ {t('no_claude_session')}")
 
+        use_multi = self._provider_instance_count("claude") > 1
+        pane_title_marker = f"CCB-Claude#{claude_instance}" if use_multi else "CCB-Claude"
+        target_key = f"claude#{claude_instance}" if use_multi else "claude"
+
         start_cmd = " ".join(cmd_parts)
         full_cmd = (
-            _build_pane_title_cmd("CCB-Claude")
+            _build_pane_title_cmd(pane_title_marker)
             + self._build_env_prefix(env_overrides)
             + _build_export_path_cmd(self.script_dir / "bin")
             + start_cmd
@@ -3105,22 +3206,23 @@ class AILauncher:
         if self.terminal_type == "wezterm":
             backend = WeztermBackend()
             pane_id = backend.create_pane(full_cmd, run_cwd, direction=use_direction, percent=50, parent_pane=use_parent)
-            self.wezterm_panes["claude"] = pane_id
+            self.wezterm_panes[target_key] = pane_id
         else:
             backend = TmuxBackend()
             pane_id = backend.create_pane("", run_cwd, direction=use_direction, percent=50, parent_pane=use_parent)
             backend.respawn_pane(pane_id, cmd=full_cmd, cwd=run_cwd, remain_on_exit=True)
-            backend.set_pane_title(pane_id, "CCB-Claude")
+            backend.set_pane_title(pane_id, pane_title_marker)
             backend.set_pane_user_option(pane_id, "@ccb_agent", "Claude")
-            self.tmux_panes["claude"] = pane_id
+            self.tmux_panes[target_key] = pane_id
 
         try:
             self._write_local_claude_session(
                 session_id=self._read_local_claude_session_id(),
                 active=True,
                 pane_id=str(pane_id or ""),
-                pane_title_marker="CCB-Claude",
+                pane_title_marker=pane_title_marker,
                 terminal=self.terminal_type,
+                claude_instance=claude_instance,
             )
         except Exception:
             pass
@@ -3329,8 +3431,9 @@ class AILauncher:
                     session_id=self._read_local_claude_session_id(),
                     active=True,
                     pane_id=str(self.anchor_pane_id or ""),
-                    pane_title_marker="CCB-Claude",
+                    pane_title_marker="CCB-Claude#1" if self._provider_instance_count("claude") > 1 else "CCB-Claude",
                     terminal=self.terminal_type,
+                    claude_instance="1",
                 )
             except Exception:
                 pass
@@ -3339,8 +3442,6 @@ class AILauncher:
             if item == "cmd":
                 return self._start_cmd_pane(parent_pane=parent, direction=direction, cmd_settings=cmd_settings)
             item_provider, _item_instance = self._split_target_key(item)
-            if item_provider == "claude":
-                return self._start_claude_pane(parent_pane=parent, direction=direction)
             pane_id = self._start_provider(item, parent_pane=parent, direction=direction)
             if pane_id:
                 self._warmup_provider(item_provider)
@@ -3918,8 +4019,8 @@ def _parse_instance_overrides(values: list[str]) -> tuple[dict[str, int], list[s
             continue
         provider_raw, count_raw = text.split("=", 1)
         provider = provider_raw.strip().lower()
-        if provider != "codex":
-            errors.append(f"--instance currently only supports provider=codex (got: {provider})")
+        if provider not in ("codex", "claude"):
+            errors.append(f"--instance currently only supports provider=codex or claude (got: {provider})")
             continue
         try:
             count = int(count_raw.strip())
